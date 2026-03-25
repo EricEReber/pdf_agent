@@ -17,7 +17,7 @@ FIELDS = [
         "label": "SAP Batch — PSMA-TAC Precursor",
         "page": 5,
         "prompt": """Find the Materials Receipt table.
-Locate the row for the BAY3546827-225Ac-PSMA-TAC precursor vial.
+Locate the row for the PSMA-TAC precursor vial.
 Extract the handwritten SAP Batch Number for that row.
 Return JSON only — no preamble, no markdown:
 {"sap_batch_number": "...", "confidence": "high|medium|low"}""",
@@ -27,7 +27,7 @@ Return JSON only — no preamble, no markdown:
         "label": "SAP Batch — 225-Ac Stock Solution",
         "page": 6,
         "prompt": """Find Section 5 — 225-Ac Stock Solutions.
-Extract the SAP batch number for the row that is NOT marked N/A.
+Extract the SAP batch number.
 Return JSON only:
 {"sap_batch_number": "...", "confidence": "high|medium|low"}""",
     },
