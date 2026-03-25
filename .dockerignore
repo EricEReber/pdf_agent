@@ -1,0 +1,8 @@
+.env
+.git
+__pycache__
+*.pyc
+*.pyo
+test_pdfs/
+*.db
+.DS_Store
