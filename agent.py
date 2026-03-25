@@ -11,47 +11,45 @@ load_dotenv()  # reads API key from .env file
 
 client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
-# Field definitions
 FIELDS = [
     {
         "id": "psma_tac_precursor",
         "label": "SAP Batch — PSMA-TAC Precursor",
         "page": 5,
-        "sap_item": "110810",
-        "prompt": """Find SAP Item 110810 in the Materials Receipt table.
-Extract the handwritten SAP Batch Number in the SAP Batch Number column.
+        "prompt": """Find the Materials Receipt table.
+Locate the row for the BAY3546827-225Ac-PSMA-TAC precursor vial.
+Extract the handwritten SAP Batch Number for that row.
 Return JSON only — no preamble, no markdown:
-{"sap_batch_number": "...", "expiration_date": "...", "confidence": "high|medium|low", "notes": "..."}""",
+{"sap_batch_number": "...", "confidence": "high|medium|low"}""",
     },
     {
         "id": "ac225_stock",
         "label": "SAP Batch — 225-Ac Stock Solution",
         "page": 6,
-        "sap_item": "110860",
         "prompt": """Find Section 5 — 225-Ac Stock Solutions.
-Extract the SAP batch number and expiration date/time for the row that is NOT marked N/A.
+Extract the SAP batch number for the row that is NOT marked N/A.
 Return JSON only:
-{"sap_batch_number": "...", "manufacturer": "...", "expiration_date": "...", "expiration_time": "...", "confidence": "high|medium|low"}""",
+{"sap_batch_number": "...", "confidence": "high|medium|low"}""",
     },
     {
         "id": "order_reference",
         "label": "Order Reference Number",
         "page": 7,
-        "sap_item": "N/A",
         "prompt": """Find Section 6 — Batch Details.
-Extract all handwritten values.
+Extract only the Order Reference Number (labeled 'Order reference no.').
 Return JSON only:
-{"order_reference_number": "...", "manufacturing_date": "...", "cohort_number": "...", "number_of_doses": "1|2|3", "target_activity_mbq": "...", "confidence": "high|medium|low"}""",
+{"order_reference_number": "...", "confidence": "high|medium|low"}""",
     },
     {
         "id": "vial_masses",
         "label": "Vial Masses",
         "page": 11,
-        "sap_item": "109417",
         "prompt": """Find Section 9 — Preparation DP Vials.
-Extract each handwritten weight value in grams (2 decimal places). Use null if N/A or blank.
+There is a table with rows for each vial. Extract every handwritten weight value.
+For each row return the vial label exactly as written and its weight in grams to 2 decimal places.
+Use null for any weight that is blank or marked N/A.
 Return JSON only:
-{"W1_DP01_g": "...", "W2_DP02_g": null, "W3_DP03_g": null, "W4_Sterility_g": "...", "W5_QC_g": "...", "W6_Retain_g": "...", "confidence": "high|medium|low"}""",
+{"vials": [{"label": "...", "weight_g": "..."}], "confidence": "high|medium|low"}""",
     },
 ]
 
@@ -125,22 +123,17 @@ Always return valid JSON with no markdown fences, no preamble.""",
 
 
 def save_to_db(records: list, db_path: str):
-    """Write extracted records to SQLite with full audit trail."""
     conn = sqlite3.connect(db_path)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS mbr_extractions (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            batch_number    TEXT NOT NULL,
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            pdf_document    TEXT NOT NULL,
             field           TEXT NOT NULL,
             page            INTEGER,
-            sap_item_number TEXT,
             value           TEXT,
-            units           TEXT,
             confidence      TEXT,
-            notes           TEXT,
             extraction_date TEXT,
-            model_version   TEXT,
-            source_document TEXT
+            model_version   TEXT
         )
     """)
 
@@ -152,22 +145,17 @@ def save_to_db(records: list, db_path: str):
         conn.execute(
             """
             INSERT INTO mbr_extractions
-            (batch_number, field, page, sap_item_number, value, units,
-             confidence, notes, extraction_date, model_version, source_document)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            (pdf_document, field, page, value, confidence, extraction_date, model_version)
+            VALUES (?,?,?,?,?,?,?)
         """,
             (
-                r["batch_number"],
+                r["pdf_document"],
                 r["field"],
                 r["page"],
-                r["sap_item_number"],
                 r["value"],
-                r.get("units"),
                 r.get("confidence"),
-                r.get("notes"),
                 today,
                 "claude-sonnet-4-20250514",
-                "MBR-00497 v4.0",
             ),
         )
 
@@ -177,77 +165,50 @@ def save_to_db(records: list, db_path: str):
 
 
 def flatten_result(field: dict, result: dict, batch_num: str) -> list:
-    """Normalize a field extraction result into database rows."""
     rows = []
 
     if field["id"] == "psma_tac_precursor":
         rows.append(
             {
-                "batch_number": batch_num,
+                "pdf_document": batch_num,
                 "field": "SAP_Batch_PSMA_TAC_Precursor",
                 "page": field["page"],
-                "sap_item_number": field["sap_item"],
                 "value": result.get("sap_batch_number"),
-                "units": None,
                 "confidence": result.get("confidence"),
-                "notes": f"Exp: {result.get('expiration_date')}",
             }
         )
 
     elif field["id"] == "ac225_stock":
         rows.append(
             {
-                "batch_number": batch_num,
+                "pdf_document": batch_num,
                 "field": "SAP_Batch_225Ac_Stock",
                 "page": field["page"],
-                "sap_item_number": field["sap_item"],
                 "value": result.get("sap_batch_number"),
-                "units": None,
                 "confidence": result.get("confidence"),
-                "notes": f"Mfr: {result.get('manufacturer')}, Exp: {result.get('expiration_date')} {result.get('expiration_time')}",
             }
         )
 
     elif field["id"] == "order_reference":
-        for fname, fval, funits in [
-            ("Order_Reference_Number", result.get("order_reference_number"), None),
-            ("Cohort_Number", result.get("cohort_number"), None),
-            ("Number_Of_Doses", result.get("number_of_doses"), "doses"),
-            ("Target_Activity_MBq", result.get("target_activity_mbq"), "MBq"),
-        ]:
-            rows.append(
-                {
-                    "batch_number": batch_num,
-                    "field": fname,
-                    "page": field["page"],
-                    "sap_item_number": "N/A",
-                    "value": fval,
-                    "units": funits,
-                    "confidence": result.get("confidence"),
-                    "notes": None,
-                }
-            )
+        rows.append(
+            {
+                "pdf_document": batch_num,
+                "field": "Order_Reference_Number",
+                "page": field["page"],
+                "value": result.get("order_reference_number"),
+                "confidence": result.get("confidence"),
+            }
+        )
 
     elif field["id"] == "vial_masses":
-        mass_map = [
-            ("W1_DP01_g", "Vial_Mass_DP01_W1"),
-            ("W2_DP02_g", "Vial_Mass_DP02_W2"),
-            ("W3_DP03_g", "Vial_Mass_DP03_W3"),
-            ("W4_Sterility_g", "Vial_Mass_Sterility_W4"),
-            ("W5_QC_g", "Vial_Mass_QC_W5"),
-            ("W6_Retain_g", "Vial_Mass_Retain_W6"),
-        ]
-        for key, fname in mass_map:
+        for vial in result.get("vials", []):
             rows.append(
                 {
-                    "batch_number": batch_num,
-                    "field": fname,
+                    "pdf_document": batch_num,
+                    "field": vial.get("label"),
                     "page": field["page"],
-                    "sap_item_number": "109417",
-                    "value": result.get(key),
-                    "units": "g",
+                    "value": vial.get("weight_g"),
                     "confidence": result.get("confidence"),
-                    "notes": result.get("notes"),
                 }
             )
 
@@ -281,7 +242,7 @@ def process_pdf(pdf_path: str, output_db: str):
             print(f"    ✗ Failed: {e}")
             all_rows.append(
                 {
-                    "batch_number": batch_num,
+                    "pdf_document": batch_num,
                     "field": field["label"],
                     "page": field["page"],
                     "sap_item_number": field["sap_item"],
